@@ -1,7 +1,7 @@
 """jinu-asset-streamlit — D-047 자산배분 Streamlit 앱 v1 (lean).
 
 기능:
-- Email OTP 6자리 코드 인증 (D-049 — 매직링크/PKCE 폐기 후 전환)
+- Email OTP 코드 인증 (D-049 — 매직링크/PKCE 폐기 후 전환, Supabase 프로젝트 설정에 따라 6-10자리)
 - Dashboard: 카테고리별 목표 vs 실제 비중 + 종목별 보유·평가액
 - Transactions 입력 form (buy/sell/rebalance)
 - (v2 후속) Dividends / Monthly Log / 시계열 차트
@@ -49,18 +49,18 @@ def _current_user():
 
 def login_view() -> None:
     st.title("jinu-asset — 자산배분 v1")
-    st.caption("D-049 Email OTP 6자리 코드 인증")
+    st.caption("D-049 Email OTP 코드 인증")
 
     if "otp_email" not in st.session_state:
         st.session_state["otp_email"] = ""
 
     if not st.session_state["otp_email"]:
         email = st.text_input("이메일 입력", placeholder="you@example.com")
-        if st.button("6자리 코드 발송", type="primary", disabled=not email):
+        if st.button("인증 코드 발송", type="primary", disabled=not email):
             try:
                 sb.auth.sign_in_with_otp({"email": email})
                 st.session_state["otp_email"] = email
-                st.success(f"{email}로 6자리 코드를 발송했습니다. 이메일 확인 후 입력하세요.")
+                st.success(f"{email}로 인증 코드를 발송했습니다. 이메일 확인 후 입력하세요.")
                 st.rerun()
             except Exception as exc:  # noqa: BLE001
                 st.error(f"발송 실패: {exc}")
@@ -68,12 +68,12 @@ def login_view() -> None:
 
     st.info(f"코드 발송됨: {st.session_state['otp_email']}")
     token = st.text_input(
-        "6자리 코드", max_chars=6, placeholder="123456",
-        help="이메일로 받은 6자리 숫자 입력",
+        "인증 코드", max_chars=10, placeholder="12345678",
+        help="이메일로 받은 숫자 코드 입력 (Supabase 프로젝트 설정에 따라 6-10자리)",
     )
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("로그인", type="primary", disabled=not token or len(token) != 6):
+        if st.button("로그인", type="primary", disabled=not token or len(token) < 6):
             try:
                 sb.auth.verify_otp(
                     {
