@@ -86,9 +86,9 @@ SUPABASE_ANON_KEY = "<your-anon-key>"
 ## 첫 사용 흐름 (진우 본인 2분, D-049)
 
 1. `https://<your-app>.streamlit.app` 접속
-2. 이메일 입력 → "6자리 코드 발송"
-3. 이메일에서 6자리 숫자 확인 (예: `483921`)
-4. 앱으로 돌아와 6자리 코드 입력 → "로그인"
+2. 이메일 입력 → "인증 코드 발송"
+3. 이메일에서 인증 코드 확인 (6-10자리, 예: `48392174`)
+4. 앱으로 돌아와 인증 코드 입력 → "로그인"
 5. 사이드바 "Transactions" → 첫 매수 기록 입력 (예: KODEX_200TR_PENSION 100주 × 12,000원)
 6. "Dashboard" → 종목별 보유 + 카테고리 비중 차트 확인
 
@@ -101,7 +101,7 @@ SUPABASE_ANON_KEY = "<your-anon-key>"
 | `Streamlit app KeyError: SUPABASE_URL` | Streamlit Secrets 미설정 | Cloud 대시보드 Advanced settings > Secrets 확인 |
 | `Failed to establish a new connection` 또는 DNS 에러 | `SUPABASE_URL` 형식 오류 (`https://https://...` 또는 `.supabase.co.supabase.co` 등 중복) | Supabase Dashboard > Settings > API의 `Project URL`을 그대로 복사 (수정 없이) |
 | 이메일이 안 옴 | 1) 스팸함 2) Supabase rate limit | (1) 스팸함 확인 (2) Supabase built-in SMTP는 2통/시간/프로젝트 한도 → 1시간 대기 또는 Resend Custom SMTP 도입 = 30통/시간 영구 해소 |
-| 이메일에 6자리 코드가 아닌 링크가 옴 | Supabase Email Template 미수정 | Authentication > Email Templates > Magic Link 본문에서 `{{ .ConfirmationURL }}` → `{{ .Token }}`로 교체 |
+| 이메일에 인증 코드가 아닌 링크가 옴 | Supabase Email Template 미수정 | Authentication > Email Templates > Magic Link 본문에서 `{{ .ConfirmationURL }}` → `{{ .Token }}`로 교체 |
 | `Token has expired or is invalid` 또는 인증 실패 | (1) 5분 이상 지남 (2) 코드 오타 (3) Email Template 미수정 | 새 코드 발송 후 즉시 입력 |
 | "table not found" 에러 | schema/seed 미적용 | `migrations/0001_init.sql` + `seeds/0001_seed.sql` 재확인 |
 | holdings 조회는 되는데 0행 | RLS owner_id 미충족 (seed 시 본인 UUID 안 박힘) | jinu-co supabase/README Phase 3 옵션 A `set_config` 재실행 |
