@@ -14,40 +14,46 @@ import datetime as dt
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from supabase import Client, create_client
+from supabase import Client, ClientOptions, create_client
 
 
 # ---------------------------------------------------------------------------
-# Supabase client (cached)
+# Supabase client (cached, PKCE flow)
 # ---------------------------------------------------------------------------
+# PKCE flow를 명시한 이유:
+# - Supabase 디폴트 implicit flow는 매직링크 토큰을 URL hash(#)에 박음
+# - Streamlit st.query_params는 query string(?)만 읽고 hash는 못 읽음
+# - PKCE flow는 ?code=xxx query param으로 와서 server-side exchange 가능
 @st.cache_resource
 def get_supabase() -> Client:
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_ANON_KEY"]
-    return create_client(url, key)
+    return create_client(url, key, options=ClientOptions(flow_type="pkce"))
 
 
 sb = get_supabase()
+SITE_URL = st.secrets.get("SITE_URL", "")
 
 
 # ---------------------------------------------------------------------------
-# Auth — 매직링크 OTP
+# Auth — 매직링크 OTP (PKCE flow)
 # ---------------------------------------------------------------------------
 def _restore_session_from_url() -> None:
-    """매직링크 클릭 후 URL hash의 access_token으로 세션 복원.
+    """매직링크 클릭 후 ?code=xxx로 받은 인증 코드를 세션으로 교환.
 
-    Streamlit Cloud 배포 도메인에 redirect되면 access_token + refresh_token이
-    query params로 전달됨. set_session()으로 sb client에 박는다.
+    PKCE flow에서는 매직링크 redirect URL이
+    https://<app>/?code=<auth_code> 형태로 옴.
+    auth.exchange_code_for_session(code)로 access/refresh token 받아 세션 박음.
     """
     qp = st.query_params
-    access_token = qp.get("access_token")
-    refresh_token = qp.get("refresh_token")
-    if access_token and refresh_token:
+    code = qp.get("code")
+    if code:
         try:
-            sb.auth.set_session(access_token=access_token, refresh_token=refresh_token)
+            sb.auth.exchange_code_for_session({"auth_code": code})
             st.query_params.clear()
+            st.rerun()
         except Exception as exc:  # noqa: BLE001
-            st.warning(f"세션 복원 실패: {exc}")
+            st.warning(f"세션 교환 실패: {exc}")
 
 
 def _current_user():
@@ -60,12 +66,19 @@ def _current_user():
 
 def login_view() -> None:
     st.title("jinu-asset — 자산배분 v1")
-    st.caption("D-047 Streamlit + Supabase + 매직링크 인증")
+    st.caption("D-047 Streamlit + Supabase + 매직링크 인증 (PKCE flow)")
+
+    if not SITE_URL:
+        st.warning(
+            "Streamlit Secrets에 SITE_URL 미설정. 매직링크 redirect 정상 작동을 위해 "
+            "https://<your-app>.streamlit.app 형식으로 SITE_URL 추가 필요."
+        )
 
     email = st.text_input("이메일 입력", placeholder="you@example.com")
     if st.button("매직링크 발송", type="primary", disabled=not email):
         try:
-            sb.auth.sign_in_with_otp({"email": email})
+            options = {"email_redirect_to": SITE_URL} if SITE_URL else {}
+            sb.auth.sign_in_with_otp({"email": email, "options": options})
             st.success("이메일을 확인해 매직링크를 클릭하세요. 같은 브라우저로 돌아오면 자동 로그인됩니다.")
         except Exception as exc:  # noqa: BLE001
             st.error(f"발송 실패: {exc}")
