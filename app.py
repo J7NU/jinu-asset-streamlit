@@ -68,8 +68,8 @@ def login_view() -> None:
 
     st.info(f"코드 발송됨: {st.session_state['otp_email']}")
     token = st.text_input(
-        "인증 코드", max_chars=10, placeholder="12345678",
-        help="이메일로 받은 숫자 코드 입력 (Supabase 프로젝트 설정에 따라 6-10자리)",
+        "인증 코드", max_chars=10, placeholder="6-10자리 숫자",
+        help="이메일로 받은 인증 코드 입력 (Supabase 프로젝트 설정에 따라 6-10자리)",
     )
     col1, col2 = st.columns(2)
     with col1:
@@ -83,6 +83,7 @@ def login_view() -> None:
                     }
                 )
                 st.session_state["otp_email"] = ""
+                st.cache_data.clear()
                 st.success("로그인 성공")
                 st.rerun()
             except Exception as exc:  # noqa: BLE001
@@ -178,6 +179,7 @@ def calc_position_table(
         agg, on="asset_id", how="left"
     )
     pos["quantity"] = pos["quantity"].fillna(0)
+    pos["quantity"] = pos["quantity"].clip(lower=0)
     pos["buy_cost"] = pos["buy_cost"].fillna(0)
 
     if not prices.empty:
@@ -220,6 +222,16 @@ def dashboard_view(user) -> None:
     col1.metric("총 평가액", f"₩{total_value:,.0f}")
     col2.metric("총 매수원가", f"₩{total_cost:,.0f}")
     col3.metric("총 수익률", f"{total_return_pct:+.2f}%")
+
+    # M-3: 가격 데이터 누락 종목 경고 (조용한 -100% 표시 방어)
+    if not pos.empty:
+        missing_price = pos[pos["effective_price"].isna()]
+        if not missing_price.empty:
+            missing_names = missing_price["asset_name"].tolist()
+            st.warning(
+                f"⚠️ 가격 데이터 없는 종목 {len(missing_names)}개: {', '.join(missing_names)}. "
+                f"평가액 0으로 계산됨. holdings.manual_price 또는 prices_snapshot fetch 확인 필요."
+            )
 
     st.divider()
 
@@ -293,6 +305,20 @@ def transactions_view(user) -> None:
         tx_type = col1.selectbox("종류", ["buy", "sell", "rebalance"])
         tx_date = col2.date_input("거래일", value=dt.date.today())
 
+        if tx_type == "rebalance":
+            st.caption(
+                "ℹ️ rebalance는 v1에서 sell과 동일하게 처리됩니다 (수량 차감만). "
+                "양방향 정확 처리 원하면 buy + sell 2건으로 분리 입력 권장."
+            )
+
+        # M-4 옵션 C (D-049 후속): form 안 즉시성 한계 회피 — 3 type 안내 항상 표시
+        # st.form은 submit 전 rerun 트리거 X → 위 if 분기 caption은 등록 후에야 노출
+        # 모든 type 1줄씩 항상 표시로 학부생 친화 + 즉시 정보 보장
+        st.caption(
+            "💡 buy = 매수 (수량·매수원가 누적) / sell = 매도 (수량 차감) / "
+            "rebalance = v1에서 sell처럼 처리 (양방향 정확 처리 원하면 buy+sell 2건 분리 입력 권장)"
+        )
+
         col3, col4 = st.columns(2)
         quantity = col3.number_input("수량", min_value=0.0, step=0.0001, format="%.4f")
         price = col4.number_input("단가(원)", min_value=0.0, step=0.01, format="%.2f")
@@ -348,6 +374,7 @@ def main() -> None:
         st.markdown(f"**로그인:** {user.email}")
         if st.button("로그아웃"):
             sb.auth.sign_out()
+            st.cache_data.clear()
             st.rerun()
         menu = st.radio("메뉴", ["Dashboard", "Transactions"], index=0)
 
