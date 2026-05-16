@@ -1,7 +1,7 @@
 """jinu-asset-streamlit — D-047 자산배분 Streamlit 앱 v1 (lean).
 
 기능:
-- 매직링크 인증 (Supabase Auth OTP)
+- Email OTP 6자리 코드 인증 (D-049 — 매직링크/PKCE 폐기 후 전환)
 - Dashboard: 카테고리별 목표 vs 실제 비중 + 종목별 보유·평가액
 - Transactions 입력 form (buy/sell/rebalance)
 - (v2 후속) Dividends / Monthly Log / 시계열 차트
@@ -14,48 +14,31 @@ import datetime as dt
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from supabase import Client, ClientOptions, create_client
+from supabase import Client, create_client
 
 
 # ---------------------------------------------------------------------------
-# Supabase client (cached, PKCE flow)
+# Supabase client (cached)
 # ---------------------------------------------------------------------------
-# PKCE flow를 명시한 이유:
-# - Supabase 디폴트 implicit flow는 매직링크 토큰을 URL hash(#)에 박음
-# - Streamlit st.query_params는 query string(?)만 읽고 hash는 못 읽음
-# - PKCE flow는 ?code=xxx query param으로 와서 server-side exchange 가능
 @st.cache_resource
 def get_supabase() -> Client:
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_ANON_KEY"]
-    return create_client(url, key, options=ClientOptions(flow_type="pkce"))
+    return create_client(url, key)
 
 
 sb = get_supabase()
-SITE_URL = st.secrets.get("SITE_URL", "")
 
 
 # ---------------------------------------------------------------------------
-# Auth — 매직링크 OTP (PKCE flow)
+# Auth — Email OTP (6자리 코드)
 # ---------------------------------------------------------------------------
-def _restore_session_from_url() -> None:
-    """매직링크 클릭 후 ?code=xxx로 받은 인증 코드를 세션으로 교환.
-
-    PKCE flow에서는 매직링크 redirect URL이
-    https://<app>/?code=<auth_code> 형태로 옴.
-    auth.exchange_code_for_session(code)로 access/refresh token 받아 세션 박음.
-    """
-    qp = st.query_params
-    code = qp.get("code")
-    if code:
-        try:
-            sb.auth.exchange_code_for_session({"auth_code": code})
-            st.query_params.clear()
-            st.rerun()
-        except Exception as exc:  # noqa: BLE001
-            st.warning(f"세션 교환 실패: {exc}")
-
-
+# D-049 — 매직링크 + PKCE flow 폐기 사유:
+# - Supabase 디폴트 implicit flow는 토큰을 URL hash(#)에 박는데 Streamlit이 못 읽음
+# - PKCE flow 전환(PR #19)해도 code_verifier 영속성이 Streamlit cache_resource +
+#   multi-session 구조와 본질적으로 충돌 (라이브 검증 시 동일 증상 재현)
+# - Email OTP 6자리 코드는 redirect/hash 자체가 없어 위 구조적 문제 회피
+# - Supabase 대시보드 Email Template에서 {{ .ConfirmationURL }} → {{ .Token }} 1줄 교체
 def _current_user():
     try:
         resp = sb.auth.get_user()
@@ -66,22 +49,48 @@ def _current_user():
 
 def login_view() -> None:
     st.title("jinu-asset — 자산배분 v1")
-    st.caption("D-047 Streamlit + Supabase + 매직링크 인증 (PKCE flow)")
+    st.caption("D-049 Email OTP 6자리 코드 인증")
 
-    if not SITE_URL:
-        st.warning(
-            "Streamlit Secrets에 SITE_URL 미설정. 매직링크 redirect 정상 작동을 위해 "
-            "https://<your-app>.streamlit.app 형식으로 SITE_URL 추가 필요."
-        )
+    if "otp_email" not in st.session_state:
+        st.session_state["otp_email"] = ""
 
-    email = st.text_input("이메일 입력", placeholder="you@example.com")
-    if st.button("매직링크 발송", type="primary", disabled=not email):
-        try:
-            options = {"email_redirect_to": SITE_URL} if SITE_URL else {}
-            sb.auth.sign_in_with_otp({"email": email, "options": options})
-            st.success("이메일을 확인해 매직링크를 클릭하세요. 같은 브라우저로 돌아오면 자동 로그인됩니다.")
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"발송 실패: {exc}")
+    if not st.session_state["otp_email"]:
+        email = st.text_input("이메일 입력", placeholder="you@example.com")
+        if st.button("6자리 코드 발송", type="primary", disabled=not email):
+            try:
+                sb.auth.sign_in_with_otp({"email": email})
+                st.session_state["otp_email"] = email
+                st.success(f"{email}로 6자리 코드를 발송했습니다. 이메일 확인 후 입력하세요.")
+                st.rerun()
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"발송 실패: {exc}")
+        return
+
+    st.info(f"코드 발송됨: {st.session_state['otp_email']}")
+    token = st.text_input(
+        "6자리 코드", max_chars=6, placeholder="123456",
+        help="이메일로 받은 6자리 숫자 입력",
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("로그인", type="primary", disabled=not token or len(token) != 6):
+            try:
+                sb.auth.verify_otp(
+                    {
+                        "email": st.session_state["otp_email"],
+                        "token": token,
+                        "type": "email",
+                    }
+                )
+                st.session_state["otp_email"] = ""
+                st.success("로그인 성공")
+                st.rerun()
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"인증 실패: {exc}")
+    with col2:
+        if st.button("이메일 변경"):
+            st.session_state["otp_email"] = ""
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +338,6 @@ def transactions_view(user) -> None:
 def main() -> None:
     st.set_page_config(page_title="jinu-asset", page_icon="💰", layout="wide")
 
-    _restore_session_from_url()
     user = _current_user()
 
     if not user:
