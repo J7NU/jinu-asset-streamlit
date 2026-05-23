@@ -317,8 +317,9 @@ def transactions_view(user) -> None:
         tx_date = col2.date_input("거래일", value=dt.date.today())
 
         col3, col4 = st.columns(2)
-        quantity = col3.number_input("수량", min_value=0.0, step=1.0, format="%.4f")
-        price = col4.number_input("단가(원)", min_value=0.0, step=1.0, format="%.2f")
+        # 한국 ETF는 정수 주 단위 거래(소수점 매매 X) + 단가는 원 단위 → 둘 다 정수 표시.
+        quantity = col3.number_input("수량(주)", min_value=0.0, step=1.0, format="%.0f")
+        price = col4.number_input("단가(원)", min_value=0.0, step=1.0, format="%.0f")
 
         memo = st.text_input("메모 (선택)", placeholder="예: 5월 1회차 매수")
 
