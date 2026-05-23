@@ -366,6 +366,155 @@ def transactions_view(user) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+def holdings_admin_view(user) -> None:
+    st.subheader("종목 관리")
+
+    categories = fetch_categories()
+    holdings = fetch_holdings()
+    transactions = fetch_transactions()
+
+    if categories.empty:
+        st.warning("categories 테이블이 비었습니다. seed 먼저 확인하세요.")
+        return
+
+    # 종목별 net 수량 (buy - sell) — 삭제 가능 판정용 (net 0만 삭제 허용)
+    net_qty: dict[str, float] = {}
+    if not transactions.empty:
+        t = transactions.copy()
+        t["signed"] = t.apply(
+            lambda r: r["quantity"] if r["type"] == "buy" else -r["quantity"], axis=1
+        )
+        net_qty = t.groupby("asset_id")["signed"].sum().to_dict()
+
+    cat_names = categories["name"].tolist()
+    tab_add, tab_edit, tab_del = st.tabs(["➕ 추가", "✏️ 수정", "🗑️ 삭제"])
+
+    # ---- 추가 ----
+    with tab_add:
+        with st.form("hold_add", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            acct_label = c1.radio("계좌", ["연금", "ISA"], horizontal=True, key="add_acct")
+            acct = "pension" if acct_label == "연금" else "isa"
+            ticker = c2.text_input("티커", placeholder="예: 379800")
+            asset_name = st.text_input("종목명", placeholder="예: KODEX 미국S&P500")
+            c3, c4 = st.columns(2)
+            cat_name = c3.selectbox("카테고리", cat_names, key="add_cat")
+            target_pct = c4.number_input(
+                "목표비중(%)", min_value=0.0, max_value=100.0, step=0.5, format="%.1f"
+            )
+            notes = st.text_input("메모 (선택)")
+            st.caption("💡 id는 `티커_계좌`로 자동 생성. 같은 티커+계좌 중복 시 등록 불가.")
+            if st.form_submit_button("종목 추가", type="primary"):
+                t_up = (ticker or "").strip().upper()
+                if not t_up or not asset_name.strip():
+                    st.error("티커·종목명을 입력하세요.")
+                else:
+                    new_id = f"{t_up}_{acct.upper()}"
+                    cat_row = categories[categories["name"] == cat_name]
+                    cat_id = int(cat_row.iloc[0]["id"]) if not cat_row.empty else None
+                    try:
+                        sb.table("holdings").insert(
+                            {
+                                "id": new_id,
+                                "asset_name": asset_name.strip(),
+                                "category_id": cat_id,
+                                "account": acct,
+                                "ticker": t_up,
+                                "currency": "KRW",
+                                "price_source": "naver",
+                                "target_pct": float(target_pct),
+                                "notes": notes or None,
+                            }
+                        ).execute()
+                        st.success(f"추가 완료: {new_id} ({asset_name.strip()})")
+                        fetch_holdings.clear()
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"추가 실패 (중복 id 또는 제약 위반): {exc}")
+
+    # ---- 수정 ----
+    with tab_edit:
+        if holdings.empty:
+            st.info("수정할 종목이 없습니다.")
+        else:
+            opts = holdings.apply(
+                lambda r: f"{r['id']} — {r['asset_name']}", axis=1
+            ).tolist()
+            sel = st.selectbox("종목 선택", opts, key="edit_sel")
+            hid = sel.split(" — ")[0]
+            row = holdings[holdings["id"] == hid].iloc[0]
+            with st.form("hold_edit"):
+                new_name = st.text_input("종목명", value=row["asset_name"])
+                c1, c2 = st.columns(2)
+                cur_cat = categories[categories["id"] == row.get("category_id")]
+                cur_cat_name = (
+                    cur_cat.iloc[0]["name"] if not cur_cat.empty else cat_names[0]
+                )
+                cat_idx = cat_names.index(cur_cat_name) if cur_cat_name in cat_names else 0
+                cat_name = c1.selectbox(
+                    "카테고리", cat_names, index=cat_idx, key="edit_cat"
+                )
+                cur_tp = float(row["target_pct"]) if pd.notna(row.get("target_pct")) else 0.0
+                target_pct = c2.number_input(
+                    "목표비중(%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=cur_tp,
+                    step=0.5,
+                    format="%.1f",
+                )
+                notes = st.text_input("메모", value=row.get("notes") or "")
+                st.caption(f"계좌·티커는 고정 (id `{hid}`). 변경하려면 삭제 후 재추가.")
+                if st.form_submit_button("수정 저장", type="primary"):
+                    cat_row = categories[categories["name"] == cat_name]
+                    cat_id = int(cat_row.iloc[0]["id"]) if not cat_row.empty else None
+                    try:
+                        sb.table("holdings").update(
+                            {
+                                "asset_name": new_name.strip(),
+                                "category_id": cat_id,
+                                "target_pct": float(target_pct),
+                                "notes": notes or None,
+                            }
+                        ).eq("id", hid).execute()
+                        st.success(f"수정 완료: {hid}")
+                        fetch_holdings.clear()
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"수정 실패: {exc}")
+
+    # ---- 삭제 (net 수량 0만 허용) ----
+    with tab_del:
+        if holdings.empty:
+            st.info("삭제할 종목이 없습니다.")
+        else:
+            opts = holdings.apply(
+                lambda r: f"{r['id']} — {r['asset_name']}", axis=1
+            ).tolist()
+            sel = st.selectbox("종목 선택", opts, key="del_sel")
+            hid = sel.split(" — ")[0]
+            qty = float(net_qty.get(hid, 0) or 0)
+            st.metric("현재 보유 수량 (net)", f"{qty:g} 주")
+            if abs(qty) > 1e-9:
+                st.warning(
+                    f"보유 수량이 {qty:g}주입니다. 전량 매도(수량 0) 후에만 삭제할 수 있습니다."
+                )
+            else:
+                st.caption(
+                    "보유 수량 0 → 삭제 가능. 해당 종목의 종료된 거래기록도 함께 제거됩니다."
+                )
+                confirm = st.checkbox(f"'{hid}' 삭제를 확인합니다", key="del_confirm")
+                if st.button("종목 삭제", type="primary", disabled=not confirm):
+                    try:
+                        # net 0이라도 거래 행이 남아 있으면 FK 막힘 → 거래 먼저 제거
+                        sb.table("transactions").delete().eq("asset_id", hid).execute()
+                        sb.table("holdings").delete().eq("id", hid).execute()
+                        st.success(f"삭제 완료: {hid}")
+                        fetch_holdings.clear()
+                        fetch_transactions.clear()
+                        st.rerun()
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"삭제 실패: {exc}")
+
+
 def main() -> None:
     st.set_page_config(page_title="jinu-asset", page_icon="💰", layout="wide")
 
@@ -381,12 +530,14 @@ def main() -> None:
             sb.auth.sign_out()
             st.cache_data.clear()
             st.rerun()
-        menu = st.radio("메뉴", ["Dashboard", "Transactions"], index=0)
+        menu = st.radio("메뉴", ["Dashboard", "Transactions", "종목 관리"], index=0)
 
     if menu == "Dashboard":
         dashboard_view(user)
     elif menu == "Transactions":
         transactions_view(user)
+    elif menu == "종목 관리":
+        holdings_admin_view(user)
 
 
 if __name__ == "__main__":
