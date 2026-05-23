@@ -148,10 +148,12 @@ def calc_position_table(
     transactions: pd.DataFrame,
     prices: pd.DataFrame,
 ) -> pd.DataFrame:
-    """asset_id별 보유수량·매수원가·평가액 집계.
+    """asset_id별 보유수량·매수원가(보유분)·평가액 집계.
 
-    수량: buy - sell - rebalance(sell side는 별도 처리, 단순화)
-    매수원가: buy의 quantity * price 합
+    수량: buy - sell (보유 net 수량)
+    매수원가(buy_cost): **평균단가 × 보유수량** — 매도분 원가는 제외.
+      (총매수금액 합산 방식은 매수 후 일부 매도 시 매도분 원가까지 남아
+       손익이 왜곡됨. 평균단가 기반으로 보유분 원가만 계산해 해결.)
     평가액: 보유수량 * latest price (manual_price fallback)
     """
     if holdings.empty:
@@ -163,15 +165,30 @@ def calc_position_table(
             lambda r: r["quantity"] if r["type"] == "buy" else -r["quantity"],
             axis=1,
         )
-        tx["buy_cost"] = tx.apply(
+        # 매수만 따로 집계해 평균단가 산출 (매도는 원가 계산에서 제외)
+        tx["buy_qty"] = tx.apply(
+            lambda r: r["quantity"] if r["type"] == "buy" else 0, axis=1
+        )
+        tx["buy_amt"] = tx.apply(
             lambda r: r["quantity"] * r["price"] if r["type"] == "buy" else 0,
             axis=1,
         )
         agg = (
             tx.groupby("asset_id")
-            .agg(quantity=("signed_qty", "sum"), buy_cost=("buy_cost", "sum"))
+            .agg(
+                quantity=("signed_qty", "sum"),
+                buy_qty=("buy_qty", "sum"),
+                buy_amt=("buy_amt", "sum"),
+            )
             .reset_index()
         )
+        # 평균매수단가 = 총매수금액 / 총매수수량
+        agg["avg_price"] = agg["buy_amt"] / agg["buy_qty"].replace(0, pd.NA)
+        # 보유분 원가 = 평균단가 × 보유수량(음수 클립). 매도분 원가는 자연 제외됨.
+        agg["buy_cost"] = (
+            agg["avg_price"] * agg["quantity"].clip(lower=0)
+        ).fillna(0)
+        agg = agg[["asset_id", "quantity", "buy_cost"]]
     else:
         agg = pd.DataFrame(columns=["asset_id", "quantity", "buy_cost"])
 
