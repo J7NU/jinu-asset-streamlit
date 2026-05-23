@@ -291,41 +291,44 @@ def transactions_view(user) -> None:
         return
 
     st.markdown("### 신규 거래 입력")
+
+    # 1) 계좌 토글 — form 밖에 둠. form 안 위젯은 submit 전 rerun을 안 일으켜서
+    #    계좌를 form 안에 두면 종목 목록이 즉시 안 바뀜. 밖에 둬야 변경 즉시 필터.
+    acct_label = st.radio("계좌", ["연금", "ISA"], horizontal=True, key="tx_acct")
+    acct = "pension" if acct_label == "연금" else "isa"
+    acct_holdings = holdings[holdings["account"] == acct]
+    if acct_holdings.empty:
+        st.info(f"{acct_label} 계좌에 등록된 종목이 없습니다.")
+        return
+
+    # 2) 종목 선택 + 입력 — Enter로 저장, clear_on_submit으로 폼 자동 초기화되어 다음 입력 연속.
     with st.form("tx_form", clear_on_submit=True):
         asset_label = st.selectbox(
             "종목",
-            options=holdings.apply(
-                lambda r: f"{r['id']} — {r['asset_name']} ({r['account']})",
+            options=acct_holdings.apply(
+                lambda r: f"{r['id']} — {r['asset_name']}",
                 axis=1,
             ).tolist(),
         )
         asset_id = asset_label.split(" — ")[0] if asset_label else None
 
         col1, col2 = st.columns(2)
-        tx_type = col1.selectbox("종류", ["buy", "sell", "rebalance"])
+        tx_type = col1.selectbox("종류", ["buy", "sell"])
         tx_date = col2.date_input("거래일", value=dt.date.today())
 
-        if tx_type == "rebalance":
-            st.caption(
-                "ℹ️ rebalance는 v1에서 sell과 동일하게 처리됩니다 (수량 차감만). "
-                "양방향 정확 처리 원하면 buy + sell 2건으로 분리 입력 권장."
-            )
-
-        # M-4 옵션 C (D-049 후속): form 안 즉시성 한계 회피 — 3 type 안내 항상 표시
-        # st.form은 submit 전 rerun 트리거 X → 위 if 분기 caption은 등록 후에야 노출
-        # 모든 type 1줄씩 항상 표시로 학부생 친화 + 즉시 정보 보장
-        st.caption(
-            "💡 buy = 매수 (수량·매수원가 누적) / sell = 매도 (수량 차감) / "
-            "rebalance = v1에서 sell처럼 처리 (양방향 정확 처리 원하면 buy+sell 2건 분리 입력 권장)"
-        )
-
         col3, col4 = st.columns(2)
-        quantity = col3.number_input("수량", min_value=0.0, step=0.0001, format="%.4f")
-        price = col4.number_input("단가(원)", min_value=0.0, step=0.01, format="%.2f")
+        # 한국 ETF는 정수 주 단위 거래(소수점 매매 X) + 단가는 원 단위 → 둘 다 정수 표시.
+        quantity = col3.number_input("수량(주)", min_value=0.0, step=1.0, format="%.0f")
+        price = col4.number_input("단가(원)", min_value=0.0, step=1.0, format="%.0f")
 
-        memo = st.text_input("메모 (선택)", placeholder="예: 6월 1회차 매수")
+        memo = st.text_input("메모 (선택)", placeholder="예: 5월 1회차 매수")
 
-        submitted = st.form_submit_button("등록", type="primary")
+        st.caption(
+            "💡 수량·단가 입력 후 **Enter** 또는 '등록' 클릭으로 저장 → 폼이 자동 초기화되어 "
+            "같은 계좌의 다음 종목을 바로 입력할 수 있습니다. 계좌를 바꾸려면 위 토글을 변경하세요. "
+            "buy = 매수(수량·원가 누적) / sell = 매도(수량 차감)."
+        )
+        submitted = st.form_submit_button("등록 (Enter)", type="primary")
         if submitted:
             if not asset_id or quantity <= 0 or price <= 0:
                 st.error("종목·수량·단가를 모두 입력하세요.")
@@ -341,7 +344,9 @@ def transactions_view(user) -> None:
                             "memo": memo or None,
                         }
                     ).execute()
-                    st.success(f"등록 완료: {tx_type} {asset_id} × {quantity} @ ₩{price:,.0f}")
+                    st.success(
+                        f"등록 완료: [{acct_label}] {tx_type} {asset_id} × {quantity:g} @ ₩{price:,.0f}"
+                    )
                     fetch_transactions.clear()
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"등록 실패: {exc}")
